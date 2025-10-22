@@ -1,4 +1,4 @@
-package com.framework;
+package com.framework.Servlets;
 
 import java.io.IOException;
 import java.net.URL;
