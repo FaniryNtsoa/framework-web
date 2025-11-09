@@ -38,10 +38,24 @@ public final class ScanHandlePath {
 
 		for (Method method : findHandleMethods(controllerClass)) {
 			HandlePath annotation = method.getAnnotation(HandlePath.class);
-			String path = annotation.value();
+			String rawPath = annotation.value();
+			String path = normalisePath(rawPath);
+
+			if (routes.containsKey(path)) {
+				throw new IllegalStateException("Duplicate HandlePath detected for path: " + path);
+			}
+
 			routes.put(path, method);
 		}
 
 		return routes;
+	}
+
+	private static String normalisePath(String value) {
+		if (value == null || value.isBlank()) {
+			return "/";
+		}
+
+		return value.startsWith("/") ? value : "/" + value;
 	}
 }

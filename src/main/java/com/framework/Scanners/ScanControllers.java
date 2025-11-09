@@ -6,13 +6,18 @@ import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 public final class ScanControllers {
 
-	private static List<Class<?>> controllerClasses;
-	private static Map<Class<?>, List<Method>> controllerHandleMethods;
+	private static final Set<String> scannedPackages = new HashSet<>();
+	private static final List<Class<?>> controllerClasses = new ArrayList<>();
+	private static final Map<Class<?>, List<Method>> controllerHandleMethods = new HashMap<>();
+	private static final Map<Class<?>, Map<String, Method>> controllerRoutes = new HashMap<>();
+	private static final Map<String, Method> routesRegistry = new HashMap<>();
 
 	private ScanControllers() {
 		// Utility class
@@ -21,57 +26,64 @@ public final class ScanControllers {
 	/**
 	 * Discover every class annotated with {@link Controller} within the package.
 	 */
-	public static List<Class<?>> findControllerClasses(String packageName) {
-		if (controllerClasses != null) {
-			return controllerClasses;
+	public static synchronized List<Class<?>> findControllerClasses(String packageName) {
+		if (packageName == null || packageName.isBlank()) {
+			return Collections.unmodifiableList(new ArrayList<>(controllerClasses));
 		}
 
-		controllerClasses = new ArrayList<>();
-		controllerHandleMethods = new HashMap<>();
+		if (!scannedPackages.contains(packageName)) {
+			for (Class<?> candidate : ClassScanner.getClassesInPackage(packageName)) {
+				if (!candidate.isAnnotationPresent(Controller.class)) {
+					continue;
+				}
 
-		for (Class<?> candidate : ClassScanner.getClassesInPackage(packageName)) {
-			if (!candidate.isAnnotationPresent(Controller.class)) {
-				continue;
+				if (!controllerClasses.contains(candidate)) {
+					controllerClasses.add(candidate);
+				}
+
+				controllerHandleMethods.put(candidate, ScanHandlePath.findHandleMethods(candidate));
+				controllerRoutes.put(candidate, ScanHandlePath.mapHandlePaths(candidate));
 			}
 
-			controllerClasses.add(candidate);
-			List<Method> handleMethods = ScanHandlePath.findHandleMethods(candidate);
-			controllerHandleMethods.put(candidate, handleMethods);
+			scannedPackages.add(packageName);
 		}
 
-		return Collections.unmodifiableList(controllerClasses);
+		return Collections.unmodifiableList(new ArrayList<>(controllerClasses));
 	}
 
 	/**
 	 * Retrieve cached handle methods for a controller. Call {@link #findControllerClasses(String)} first.
 	 */
-	public static List<Method> getHandleMethods(Class<?> controllerClass) {
-		if (controllerHandleMethods == null) {
-			throw new IllegalStateException("Controllers have not been scanned yet");
-		}
-
+	public static synchronized List<Method> getHandleMethods(Class<?> controllerClass) {
 		List<Method> methods = controllerHandleMethods.get(controllerClass);
 		if (methods == null) {
-			throw new IllegalArgumentException("Unknown controller: " + controllerClass.getName());
+			methods = ScanHandlePath.findHandleMethods(controllerClass);
+			controllerHandleMethods.put(controllerClass, methods);
+			controllerRoutes.put(controllerClass, ScanHandlePath.mapHandlePaths(controllerClass));
+			if (!controllerClasses.contains(controllerClass)) {
+				controllerClasses.add(controllerClass);
+			}
 		}
 
-		return Collections.unmodifiableList(methods);
+		return Collections.unmodifiableList(new ArrayList<>(methods));
 	}
 
 	/**
 	 * Build a mapping between paths and methods across all discovered controllers.
 	 */
-	public static Map<String, Method> mapHandlePaths(String packageName) {
+	public static synchronized Map<String, Method> mapHandlePaths(String packageName) {
 		findControllerClasses(packageName);
 
-		Map<String, Method> routes = new HashMap<>();
-		for (Class<?> controller : controllerClasses) {
-			for (Map.Entry<String, Method> entry : ScanHandlePath.mapHandlePaths(controller).entrySet()) {
-				routes.put(entry.getKey(), entry.getValue());
+		for (Map.Entry<Class<?>, Map<String, Method>> entry : controllerRoutes.entrySet()) {
+			for (Map.Entry<String, Method> route : entry.getValue().entrySet()) {
+				Method previous = routesRegistry.putIfAbsent(route.getKey(), route.getValue());
+				if (previous != null && !previous.equals(route.getValue())) {
+					throw new IllegalStateException("Conflicting handlers found for path: " + route.getKey());
+				}
 			}
 		}
 
-		return routes;
+		return Collections.unmodifiableMap(new HashMap<>(routesRegistry));
 	}
 
 	public static void printControllers(String packageName) {
