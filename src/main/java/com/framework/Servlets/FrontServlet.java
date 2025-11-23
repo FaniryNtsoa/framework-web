@@ -11,195 +11,155 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 
 import java.io.IOException;
-import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.net.URL;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 
-@WebServlet("/*") // intercepte toutes les requêtes
+/**
+ * FrontServlet - Sprint 1, 2, 2-bis, 3
+ * 
+ * Sprint 1: Intercepte toutes les requêtes avec @WebServlet("/*")
+ * Sprint 2: Utilise les annotations @Controller et @HandlePath
+ * Sprint 2-bis: HashMap pour mapper URL -> Méthode, retourne 404 si non trouvé
+ * Sprint 3: Scanning automatique dans init()
+ * 
+ * IMPORTANT: Le servlet intercepte TOUT, mais il laisse passer les fichiers statiques
+ * (HTML, CSS, JS, images) en utilisant getServletContext().getResource()
+ * pour vérifier si le fichier existe physiquement dans webapp/
+ */
+@WebServlet("/*")
 public class FrontServlet extends HttpServlet {
 
     private static final String CONTROLLERS_PACKAGES_PARAM = "controllers-packages";
-    private Map<String, Method> routeRegistry = Collections.emptyMap();
+    public static final String ROUTE_REGISTRY_ATTRIBUTE = "framework.routes";
+    private Map<String, Method> routeRegistry = new HashMap<>();
 
+    /**
+     * Sprint 3: Init() effectue le scanning au démarrage
+     */
     @Override
     public void init(ServletConfig config) throws ServletException {
         super.init(config);
-        registerRoutes(config);
-    }
-
-    @Override
-    protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws ServletException, IOException {
-        processRequest(req, resp);
-    }
-
-    @Override
-    protected void doPost(HttpServletRequest req, HttpServletResponse resp) throws ServletException, IOException {
-        processRequest(req, resp);
-    }
-
-    private void processRequest(HttpServletRequest req, HttpServletResponse resp) throws ServletException, IOException {
-        String path = extractPath(req);
-        Method handler = routeRegistry.get(path);
-
-        if (handler != null) {
-            dispatchToHandler(handler, req, resp);
-            return;
-        }
-
-        if (serveStaticResource(path, req, resp)) {
-            return;
-        }
-
-        resp.sendError(HttpServletResponse.SC_NOT_FOUND, "Erreur 404 : " + path + " introuvable.");
-    }
-
-    private void registerRoutes(ServletConfig config) throws ServletException {
+        
+        // Récupérer le package à scanner depuis web.xml
         String packagesDeclaration = config.getInitParameter(CONTROLLERS_PACKAGES_PARAM);
         if (packagesDeclaration == null || packagesDeclaration.isBlank()) {
             packagesDeclaration = getServletContext().getInitParameter(CONTROLLERS_PACKAGES_PARAM);
         }
 
         if (packagesDeclaration == null || packagesDeclaration.isBlank()) {
-            packagesDeclaration = "com"; // valeur par défaut raisonnable
-            getServletContext().log("Aucun paramètre '" + CONTROLLERS_PACKAGES_PARAM + "' fourni. Utilisation du package par défaut 'com'.");
+            throw new ServletException("Paramètre '" + CONTROLLERS_PACKAGES_PARAM + "' non défini dans web.xml");
         }
 
-        Map<String, Method> discoveredRoutes = new HashMap<>();
-        for (String declaredPackage : packagesDeclaration.split(",")) {
-            String basePackage = declaredPackage.trim();
-            if (basePackage.isEmpty()) {
-                continue;
-            }
-
-            Map<String, Method> routes = ScanControllers.mapHandlePaths(basePackage);
-            for (Map.Entry<String, Method> entry : routes.entrySet()) {
-                Method previous = discoveredRoutes.putIfAbsent(entry.getKey(), entry.getValue());
-                if (previous != null && !previous.equals(entry.getValue())) {
-                    throw new ServletException("Route dupliquée détectée pour le chemin : " + entry.getKey());
-                }
-            }
-        }
-
-        routeRegistry = Collections.unmodifiableMap(discoveredRoutes);
-        getServletContext().log("Routes enregistrées : " + routeRegistry.keySet());
+        // Sprint 2-bis: Scanner et remplir la HashMap
+        routeRegistry = ScanControllers.mapHandlePaths(packagesDeclaration.trim());
+        
+        // Sprint 3: Stocker la HashMap dans le ServletContext pour que les contrôleurs puissent y accéder
+        getServletContext().setAttribute(ROUTE_REGISTRY_ATTRIBUTE, routeRegistry);
+        
+        // Log pour debug
+        getServletContext().log("Routes enregistrees : " + routeRegistry.keySet());
+        getServletContext().log("Nombre de routes : " + routeRegistry.size());
     }
 
-    private String extractPath(HttpServletRequest req) {
-        String requestUri = req.getRequestURI();
-        String contextPath = req.getContextPath();
-        String relative = requestUri.substring(contextPath.length());
-
-        if (relative.isEmpty()) {
-            return "/";
-        }
-
-        return relative.startsWith("/") ? relative : "/" + relative;
+    /**
+     * Sprint 1: Intercepter les requêtes GET
+     */
+    @Override
+    protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws ServletException, IOException {
+        processRequest(req, resp);
     }
 
-    private void dispatchToHandler(Method handler, HttpServletRequest req, HttpServletResponse resp) throws ServletException, IOException {
-        Object controllerInstance = instantiateController(handler);
-        Object result;
+    /**
+     * Sprint 1: Intercepter les requêtes POST
+     */
+    @Override
+    protected void doPost(HttpServletRequest req, HttpServletResponse resp) throws ServletException, IOException {
+        processRequest(req, resp);
+    }
 
-        try {
-            result = invokeHandler(handler, controllerInstance, req, resp);
-        } catch (InvocationTargetException e) {
-            Throwable target = e.getTargetException();
-            if (target instanceof ServletException servletException) {
-                throw servletException;
-            }
-            if (target instanceof IOException ioException) {
-                throw ioException;
-            }
-            throw new ServletException("Erreur lors de l'exécution du handler", target);
-        } catch (ReflectiveOperationException e) {
-            throw new ServletException("Impossible d'invoquer le handler " + handler, e);
+    /**
+     * Traiter toutes les requêtes
+     */
+    private void processRequest(HttpServletRequest req, HttpServletResponse resp) throws ServletException, IOException {
+        // Extraire le chemin de la requête
+        String path = req.getRequestURI().substring(req.getContextPath().length());
+        if (path.isEmpty()) {
+            path = "/";
         }
 
-        if (resp.isCommitted()) {
+        // Sprint 2-bis: Chercher d'abord dans la HashMap des contrôleurs
+        Method handler = routeRegistry.get(path);
+
+        if (handler != null) {
+            // Route trouvée dans nos contrôleurs, invoquer la méthode
+            invokeHandler(handler, req, resp);
             return;
         }
 
-        if (result instanceof String viewName) {
-            renderView(viewName, req, resp);
-        } else if (result != null) {
-            resp.setContentType("text/plain;charset=UTF-8");
-            resp.getWriter().print(result.toString());
-        }
-    }
-
-    private Object instantiateController(Method handler) throws ServletException {
-        Class<?> controllerClass = handler.getDeclaringClass();
-        try {
-            return controllerClass.getDeclaredConstructor().newInstance();
-        } catch (ReflectiveOperationException e) {
-            throw new ServletException("Impossible d'instancier le contrôleur " + controllerClass.getName(), e);
-        }
-    }
-
-    private Object invokeHandler(Method handler, Object controllerInstance, HttpServletRequest req, HttpServletResponse resp)
-            throws ReflectiveOperationException {
-        handler.setAccessible(true);
-        Class<?>[] parameterTypes = handler.getParameterTypes();
-
-        if (parameterTypes.length == 2
-                && HttpServletRequest.class.isAssignableFrom(parameterTypes[0])
-                && HttpServletResponse.class.isAssignableFrom(parameterTypes[1])) {
-            return handler.invoke(controllerInstance, req, resp);
-        }
-
-        if (parameterTypes.length == 1 && HttpServletRequest.class.isAssignableFrom(parameterTypes[0])) {
-            return handler.invoke(controllerInstance, req);
-        }
-
-        if (parameterTypes.length == 0) {
-            return handler.invoke(controllerInstance);
-        }
-
-        throw new IllegalStateException("Signature de handler non supportée : " + handler);
-    }
-
-    private void renderView(String viewName, HttpServletRequest req, HttpServletResponse resp) throws ServletException, IOException {
-        if (viewName.startsWith("redirect:")) {
-            String target = viewName.substring("redirect:".length());
-            if (!target.startsWith("/")) {
-                target = "/" + target;
-            }
-            resp.sendRedirect(req.getContextPath() + target);
-            return;
-        }
-
-        RequestDispatcher dispatcher = req.getRequestDispatcher(viewName);
-        if (dispatcher == null) {
-            resp.sendError(HttpServletResponse.SC_INTERNAL_SERVER_ERROR,
-                    "Vue introuvable pour le résultat : " + viewName);
-            return;
-        }
-
-        dispatcher.forward(req, resp);
-    }
-
-    private boolean serveStaticResource(String path, HttpServletRequest req, HttpServletResponse resp)
-            throws ServletException, IOException {
-        if ("/".equals(path)) {
-            resp.setContentType("text/plain;charset=UTF-8");
-            resp.getWriter().println("/");
-            return true;
-        }
-
+        // Si pas de contrôleur, vérifier si c'est un fichier statique (HTML, CSS, JS, images, etc.)
+        // getServletContext().getResource() vérifie si le fichier existe physiquement dans webapp/
         URL resource = getServletContext().getResource(path);
-        if (resource == null) {
-            return false;
+        if (resource != null) {
+            // C'est un fichier statique, laisser le servlet par défaut de Tomcat le servir
+            RequestDispatcher dispatcher = getServletContext().getNamedDispatcher("default");
+            if (dispatcher != null) {
+                dispatcher.forward(req, resp);
+                return;
+            }
         }
 
-        RequestDispatcher dispatcher = getServletContext().getNamedDispatcher("default");
-        if (dispatcher == null) {
-            return false;
-        }
+        // Sprint 2-bis: Erreur 404 si ni contrôleur ni fichier statique trouvé
+        resp.setStatus(HttpServletResponse.SC_NOT_FOUND);
+        resp.setContentType("text/plain;charset=UTF-8");
+        resp.getWriter().println("Erreur 404 : " + path + " introuvable.");
+    }
 
-        dispatcher.forward(req, resp);
-        return true;
+    /**
+     * Sprint 2: Invoquer la méthode du contrôleur
+     */
+    private void invokeHandler(Method handler, HttpServletRequest req, HttpServletResponse resp) 
+            throws ServletException, IOException {
+        try {
+            // Instancier le contrôleur
+            Class<?> controllerClass = handler.getDeclaringClass();
+            Object controllerInstance = controllerClass.getDeclaredConstructor().newInstance();
+
+            // Rendre la méthode accessible
+            handler.setAccessible(true);
+
+            // Invoquer la méthode
+            Class<?>[] paramTypes = handler.getParameterTypes();
+            Object result;
+
+            if (paramTypes.length == 2) {
+                // Méthode avec (HttpServletRequest, HttpServletResponse)
+                result = handler.invoke(controllerInstance, req, resp);
+            } else if (paramTypes.length == 1) {
+                // Méthode avec (HttpServletRequest) ou (HttpServletResponse)
+                if (HttpServletRequest.class.isAssignableFrom(paramTypes[0])) {
+                    result = handler.invoke(controllerInstance, req);
+                } else if (HttpServletResponse.class.isAssignableFrom(paramTypes[0])) {
+                    result = handler.invoke(controllerInstance, resp);
+                } else {
+                    throw new ServletException("Type de paramètre non supporté : " + paramTypes[0]);
+                }
+            } else if (paramTypes.length == 0) {
+                // Méthode sans paramètre
+                result = handler.invoke(controllerInstance);
+            } else {
+                throw new ServletException("Signature de méthode non supportée : " + handler);
+            }
+
+            // Si la méthode retourne un String et que la réponse n'a pas déjà été écrite
+            if (result instanceof String && !resp.isCommitted()) {
+                resp.setContentType("text/plain;charset=UTF-8");
+                resp.getWriter().print(result);
+            }
+
+        } catch (Exception e) {
+            throw new ServletException("Erreur lors de l'invocation du handler : " + handler, e);
+        }
     }
 }

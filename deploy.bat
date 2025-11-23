@@ -101,7 +101,7 @@ echo Deploiement termine avec succes !
 echo ==========================================
 echo.
 echo Fichiers generés :
-echo - JAR : %APP_NAME%.jar
+echo - JAR : %APP_NAME% 
 echo - WAR : %BUILD_DIR%\%APP_NAME%.war
 echo.
 echo Instructions :
