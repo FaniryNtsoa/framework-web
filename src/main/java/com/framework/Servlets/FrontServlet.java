@@ -127,7 +127,7 @@ public class FrontServlet extends HttpServlet {
     }
 
     /**
-     * Sprint 4: Invoquer la méthode du contrôleur
+     * Sprint 4: Invoquer la méthode du contrôleur et gérer le retour String
      */
     private void invokeHandler(Method handler, HttpServletRequest req, HttpServletResponse resp) 
             throws ServletException, IOException {
