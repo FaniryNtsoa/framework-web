@@ -4,3 +4,4 @@ C:\Users\fanir\Documents\ITU\Faniry\S5\Naina\framework-web\src\main\java\com\fra
 C:\Users\fanir\Documents\ITU\Faniry\S5\Naina\framework-web\src\main\java\com\framework\Scanners\ScanControllers.java 
 C:\Users\fanir\Documents\ITU\Faniry\S5\Naina\framework-web\src\main\java\com\framework\Scanners\ScanHandlePath.java 
 C:\Users\fanir\Documents\ITU\Faniry\S5\Naina\framework-web\src\main\java\com\framework\Servlets\FrontServlet.java 
+C:\Users\fanir\Documents\ITU\Faniry\S5\Naina\framework-web\src\main\java\com\framework\util\ModelView.java 

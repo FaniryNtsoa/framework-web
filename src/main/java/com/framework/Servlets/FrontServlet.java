@@ -1,5 +1,6 @@
 package com.framework.Servlets;
 
+import com.framework.util.ModelView;
 import com.framework.Scanners.ScanControllers;
 
 import jakarta.servlet.RequestDispatcher;
@@ -102,7 +103,16 @@ public class FrontServlet extends HttpServlet {
         // getServletContext().getResource() vérifie si le fichier existe physiquement dans webapp/
         URL resource = getServletContext().getResource(path);
         if (resource != null) {
-            // C'est un fichier statique, laisser le servlet par défaut de Tomcat le servir
+            // Si c'est un fichier JSP, laisser le servlet JSP de Tomcat le gérer
+            if (path.endsWith(".jsp")) {
+                RequestDispatcher dispatcher = getServletContext().getNamedDispatcher("jsp");
+                if (dispatcher != null) {
+                    dispatcher.forward(req, resp);
+                    return;
+                }
+            }
+            
+            // C'est un fichier statique (HTML, CSS, JS, images), laisser le servlet par défaut de Tomcat le servir
             RequestDispatcher dispatcher = getServletContext().getNamedDispatcher("default");
             if (dispatcher != null) {
                 dispatcher.forward(req, resp);
@@ -117,7 +127,7 @@ public class FrontServlet extends HttpServlet {
     }
 
     /**
-     * Sprint 2: Invoquer la méthode du contrôleur
+     * Sprint 4: Invoquer la méthode du contrôleur
      */
     private void invokeHandler(Method handler, HttpServletRequest req, HttpServletResponse resp) 
             throws ServletException, IOException {
@@ -152,8 +162,23 @@ public class FrontServlet extends HttpServlet {
                 throw new ServletException("Signature de méthode non supportée : " + handler);
             }
 
-            // Si la méthode retourne un String et que la réponse n'a pas déjà été écrite
-            if (result instanceof String && !resp.isCommitted()) {
+            // Sprint 4-bis: Si la méthode retourne un ModelView, dispatcher vers la vue JSP
+            // IMPORTANT: Vérifier ModelView AVANT String pour éviter les problèmes de Content-Type
+            if (result instanceof ModelView && !resp.isCommitted()) {
+                ModelView modelView = (ModelView) result;
+                String viewPath = modelView.getVue();
+                
+                if (viewPath == null || viewPath.isBlank()) {
+                    throw new ServletException("ModelView.getVue() retourne null ou vide");
+                }
+                
+                // NE PAS définir de Content-Type avant le dispatch !
+                // Le JSP définira son propre Content-Type
+                RequestDispatcher dispatcher = req.getRequestDispatcher(viewPath);
+                dispatcher.forward(req, resp);
+            }
+            // Sprint 4: Si la méthode retourne un String, l'afficher avec PrintWriter
+            else if (result instanceof String && !resp.isCommitted()) {
                 resp.setContentType("text/plain;charset=UTF-8");
                 resp.getWriter().print(result);
             }
