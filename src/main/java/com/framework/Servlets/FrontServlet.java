@@ -1,6 +1,7 @@
 package com.framework.Servlets;
 
 import com.framework.Scanners.ScanControllers;
+import com.framework.util.ModelView;
 
 import jakarta.servlet.RequestDispatcher;
 import jakarta.servlet.ServletConfig;
@@ -17,12 +18,15 @@ import java.util.HashMap;
 import java.util.Map;
 
 /**
- * FrontServlet - Sprint 1, 2, 2-bis, 3
+ * FrontServlet - Sprint 1, 2, 2-bis, 3, 4, 4-bis, 5
  * 
  * Sprint 1: Intercepte toutes les requêtes avec @WebServlet("/*")
  * Sprint 2: Utilise les annotations @Controller et @HandlePath
  * Sprint 2-bis: HashMap pour mapper URL -> Méthode, retourne 404 si non trouvé
  * Sprint 3: Scanning automatique dans init()
+ * Sprint 4: Invocation par réflexion et affichage du String retourné
+ * Sprint 4-bis: Support de ModelView pour dispatch vers JSP
+ * Sprint 5: Transfert des données du ModelView vers request.setAttribute()
  * 
  * IMPORTANT: Le servlet intercepte TOUT, mais il laisse passer les fichiers statiques
  * (HTML, CSS, JS, images) en utilisant getServletContext().getResource()
@@ -102,7 +106,16 @@ public class FrontServlet extends HttpServlet {
         // getServletContext().getResource() vérifie si le fichier existe physiquement dans webapp/
         URL resource = getServletContext().getResource(path);
         if (resource != null) {
-            // C'est un fichier statique, laisser le servlet par défaut de Tomcat le servir
+            // Si c'est un fichier JSP, laisser le servlet JSP de Tomcat le gérer
+            if (path.endsWith(".jsp")) {
+                RequestDispatcher dispatcher = getServletContext().getNamedDispatcher("jsp");
+                if (dispatcher != null) {
+                    dispatcher.forward(req, resp);
+                    return;
+                }
+            }
+            
+            // C'est un fichier statique (HTML, CSS, JS, images), laisser le servlet par défaut de Tomcat le servir
             RequestDispatcher dispatcher = getServletContext().getNamedDispatcher("default");
             if (dispatcher != null) {
                 dispatcher.forward(req, resp);
@@ -117,7 +130,9 @@ public class FrontServlet extends HttpServlet {
     }
 
     /**
-     * Sprint 4: Invoquer la méthode du contrôleur et gérer le retour String
+     * Sprint 4: Invoquer la méthode du contrôleur
+     * Sprint 4-bis: Gérer le retour ModelView pour dispatch JSP
+     * Sprint 5: Transférer les données du ModelView vers request.setAttribute()
      */
     private void invokeHandler(Method handler, HttpServletRequest req, HttpServletResponse resp) 
             throws ServletException, IOException {
@@ -152,8 +167,30 @@ public class FrontServlet extends HttpServlet {
                 throw new ServletException("Signature de méthode non supportée : " + handler);
             }
 
-            // Si la méthode retourne un String et que la réponse n'a pas déjà été écrite
-            if (result instanceof String && !resp.isCommitted()) {
+            // Sprint 4-bis & 5: Si la méthode retourne un ModelView, dispatcher vers la vue JSP
+            // IMPORTANT: Vérifier ModelView AVANT String pour éviter les problèmes de Content-Type
+            if (result instanceof ModelView && !resp.isCommitted()) {
+                ModelView modelView = (ModelView) result;
+                String viewPath = modelView.getVue();
+                
+                if (viewPath == null || viewPath.isBlank()) {
+                    throw new ServletException("ModelView.getVue() retourne null ou vide");
+                }
+                
+                // Sprint 5: Transférer toutes les données du ModelView vers le request
+                // Les données seront accessibles dans la JSP via request.getAttribute(key)
+                Map<String, Object> data = modelView.getData();
+                for (Map.Entry<String, Object> entry : data.entrySet()) {
+                    req.setAttribute(entry.getKey(), entry.getValue());
+                }
+                
+                // NE PAS définir de Content-Type avant le dispatch !
+                // Le JSP définira son propre Content-Type
+                RequestDispatcher dispatcher = req.getRequestDispatcher(viewPath);
+                dispatcher.forward(req, resp);
+            }
+            // Sprint 4: Si la méthode retourne un String, l'afficher avec PrintWriter
+            else if (result instanceof String && !resp.isCommitted()) {
                 resp.setContentType("text/plain;charset=UTF-8");
                 resp.getWriter().print(result);
             }
