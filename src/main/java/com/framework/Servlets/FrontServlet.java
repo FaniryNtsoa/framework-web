@@ -2,6 +2,7 @@ package com.framework.Servlets;
 
 import com.framework.util.ModelView;
 import com.framework.Scanners.ScanControllers;
+import com.framework.util.ModelView;
 
 import jakarta.servlet.RequestDispatcher;
 import jakarta.servlet.ServletConfig;
@@ -18,12 +19,15 @@ import java.util.HashMap;
 import java.util.Map;
 
 /**
- * FrontServlet - Sprint 1, 2, 2-bis, 3
+ * FrontServlet - Sprint 1, 2, 2-bis, 3, 4, 4-bis, 5
  * 
  * Sprint 1: Intercepte toutes les requêtes avec @WebServlet("/*")
  * Sprint 2: Utilise les annotations @Controller et @HandlePath
  * Sprint 2-bis: HashMap pour mapper URL -> Méthode, retourne 404 si non trouvé
  * Sprint 3: Scanning automatique dans init()
+ * Sprint 4: Invocation par réflexion et affichage du String retourné
+ * Sprint 4-bis: Support de ModelView pour dispatch vers JSP
+ * Sprint 5: Transfert des données du ModelView vers request.setAttribute()
  * 
  * IMPORTANT: Le servlet intercepte TOUT, mais il laisse passer les fichiers statiques
  * (HTML, CSS, JS, images) en utilisant getServletContext().getResource()
@@ -127,7 +131,9 @@ public class FrontServlet extends HttpServlet {
     }
 
     /**
-     * Sprint 4: Invoquer la méthode du contrôleur et gérer le retour String
+     * Sprint 4: Invoquer la méthode du contrôleur
+     * Sprint 4-bis: Gérer le retour ModelView pour dispatch JSP
+     * Sprint 5: Transférer les données du ModelView vers request.setAttribute()
      */
     private void invokeHandler(Method handler, HttpServletRequest req, HttpServletResponse resp) 
             throws ServletException, IOException {
@@ -162,7 +168,7 @@ public class FrontServlet extends HttpServlet {
                 throw new ServletException("Signature de méthode non supportée : " + handler);
             }
 
-            // Sprint 4-bis: Si la méthode retourne un ModelView, dispatcher vers la vue JSP
+            // Sprint 4-bis & 5: Si la méthode retourne un ModelView, dispatcher vers la vue JSP
             // IMPORTANT: Vérifier ModelView AVANT String pour éviter les problèmes de Content-Type
             if (result instanceof ModelView && !resp.isCommitted()) {
                 ModelView modelView = (ModelView) result;
@@ -170,6 +176,13 @@ public class FrontServlet extends HttpServlet {
                 
                 if (viewPath == null || viewPath.isBlank()) {
                     throw new ServletException("ModelView.getVue() retourne null ou vide");
+                }
+                
+                // Sprint 5: Transférer toutes les données du ModelView vers le request
+                // Les données seront accessibles dans la JSP via request.getAttribute(key)
+                Map<String, Object> data = modelView.getData();
+                for (Map.Entry<String, Object> entry : data.entrySet()) {
+                    req.setAttribute(entry.getKey(), entry.getValue());
                 }
                 
                 // NE PAS définir de Content-Type avant le dispatch !
