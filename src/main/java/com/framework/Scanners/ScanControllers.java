@@ -10,14 +10,15 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.LinkedHashMap;
 
 public final class ScanControllers {
 
 	private static final Set<String> scannedPackages = new HashSet<>();
 	private static final List<Class<?>> controllerClasses = new ArrayList<>();
 	private static final Map<Class<?>, List<Method>> controllerHandleMethods = new HashMap<>();
-	private static final Map<Class<?>, Map<String, Method>> controllerRoutes = new HashMap<>();
-	private static final Map<String, Method> routesRegistry = new HashMap<>();
+	private static final Map<Class<?>, Map<String, UrlDetails>> controllerRoutes = new HashMap<>();
+	private static final Map<String, UrlDetails> routesRegistry = new LinkedHashMap<>();
 
 	private ScanControllers() {
 		// Utility class
@@ -71,19 +72,19 @@ public final class ScanControllers {
 	/**
 	 * Build a mapping between paths and methods across all discovered controllers.
 	 */
-	public static synchronized Map<String, Method> mapHandlePaths(String packageName) {
+	public static synchronized Map<String, UrlDetails> mapHandlePaths(String packageName) {
 		findControllerClasses(packageName);
 
-		for (Map.Entry<Class<?>, Map<String, Method>> entry : controllerRoutes.entrySet()) {
-			for (Map.Entry<String, Method> route : entry.getValue().entrySet()) {
-				Method previous = routesRegistry.putIfAbsent(route.getKey(), route.getValue());
-				if (previous != null && !previous.equals(route.getValue())) {
-					throw new IllegalStateException("Conflicting handlers found for path: " + route.getKey());
-				}
+		for (Map.Entry<Class<?>, Map<String, UrlDetails>> entry : controllerRoutes.entrySet()) {
+			for (Map.Entry<String, UrlDetails> route : entry.getValue().entrySet()) {
+				routesRegistry.merge(route.getKey(), route.getValue(), (existing, incoming) -> {
+					existing.addMethodsFrom(incoming);
+					return existing;
+				});
 			}
 		}
 
-		return Collections.unmodifiableMap(new HashMap<>(routesRegistry));
+		return Collections.unmodifiableMap(new LinkedHashMap<>(routesRegistry));
 	}
 
 	public static void printControllers(String packageName) {
