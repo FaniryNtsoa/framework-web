@@ -1,7 +1,7 @@
 package com.framework.Servlets;
 
-import com.framework.util.ModelView;
 import com.framework.Scanners.ScanControllers;
+import com.framework.Scanners.UrlDetails;
 import com.framework.util.ModelView;
 
 import jakarta.servlet.RequestDispatcher;
@@ -15,7 +15,10 @@ import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.lang.reflect.Method;
 import java.net.URL;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -38,7 +41,8 @@ public class FrontServlet extends HttpServlet {
 
     private static final String CONTROLLERS_PACKAGES_PARAM = "controllers-packages";
     public static final String ROUTE_REGISTRY_ATTRIBUTE = "framework.routes";
-    private Map<String, Method> routeRegistry = new HashMap<>();
+    private Map<String, UrlDetails> routeRegistry = new HashMap<>();
+    private List<UrlDetails> dynamicRoutes = new ArrayList<>();
 
     /**
      * Sprint 3: Init() effectue le scanning au démarrage
@@ -57,9 +61,16 @@ public class FrontServlet extends HttpServlet {
             throw new ServletException("Paramètre '" + CONTROLLERS_PACKAGES_PARAM + "' non défini dans web.xml");
         }
 
-        // Sprint 2-bis: Scanner et remplir la HashMap
+        // Sprint 2-bis: Scanner et préparer l'enregistrement des routes
         routeRegistry = ScanControllers.mapHandlePaths(packagesDeclaration.trim());
-        
+
+        dynamicRoutes = new ArrayList<>();
+        for (UrlDetails details : routeRegistry.values()) {
+            if (details.isDynamic()) {
+                dynamicRoutes.add(details);
+            }
+        }
+
         // Sprint 3: Stocker la HashMap dans le ServletContext pour que les contrôleurs puissent y accéder
         getServletContext().setAttribute(ROUTE_REGISTRY_ATTRIBUTE, routeRegistry);
         
@@ -94,13 +105,21 @@ public class FrontServlet extends HttpServlet {
             path = "/";
         }
 
-        // Sprint 2-bis: Chercher d'abord dans la HashMap des contrôleurs
-        Method handler = routeRegistry.get(path);
-
-        if (handler != null) {
-            // Route trouvée dans nos contrôleurs, invoquer la méthode
-            invokeHandler(handler, req, resp);
+        // Sprint 2-bis: Chercher d'abord une correspondance exacte parmi les routes scannées
+        UrlDetails exactMatch = routeRegistry.get(path);
+        if (exactMatch != null && invokeMatchingHandler(exactMatch, Collections.emptyList(), req, resp)) {
             return;
+        }
+
+        // Sprint 3-ter: Rechercher ensuite une route dynamique avec segments {variable}
+        for (UrlDetails candidate : dynamicRoutes) {
+            List<String> extractedValues = candidate.match(path);
+            if (extractedValues == null) {
+                continue;
+            }
+            if (invokeMatchingHandler(candidate, extractedValues, req, resp)) {
+                return;
+            }
         }
 
         // Si pas de contrôleur, vérifier si c'est un fichier statique (HTML, CSS, JS, images, etc.)
@@ -131,73 +150,182 @@ public class FrontServlet extends HttpServlet {
     }
 
     /**
-     * Sprint 4: Invoquer la méthode du contrôleur
-     * Sprint 4-bis: Gérer le retour ModelView pour dispatch JSP
-     * Sprint 5: Transférer les données du ModelView vers request.setAttribute()
+     * Parcours les handlers associés à une URL et exécute le premier dont la signature
+     * est compatible avec les paramètres préparés (requête, réponse, variables dynamiques).
      */
-    private void invokeHandler(Method handler, HttpServletRequest req, HttpServletResponse resp) 
+    private boolean invokeMatchingHandler(UrlDetails urlDetails, List<String> pathVariables,
+                                          HttpServletRequest req, HttpServletResponse resp)
+            throws ServletException, IOException {
+        for (Method handler : urlDetails.getMethods()) {
+            Object[] arguments;
+            try {
+                arguments = resolveArguments(handler, pathVariables, req, resp);
+            } catch (UnsupportedOperationException unsupported) {
+                throw new ServletException("Type de paramètre non supporté : " + handler, unsupported);
+            }
+
+            if (arguments == null) {
+                continue;
+            }
+
+            executeHandler(handler, arguments, req, resp);
+            return true;
+        }
+
+        return false;
+    }
+
+    private Object[] resolveArguments(Method handler, List<String> pathVariables,
+                                      HttpServletRequest req, HttpServletResponse resp) {
+        Class<?>[] paramTypes = handler.getParameterTypes();
+        List<Object> arguments = new ArrayList<>(paramTypes.length);
+        int dynamicIndex = 0;
+        int dynamicSize = pathVariables == null ? 0 : pathVariables.size();
+
+        for (Class<?> paramType : paramTypes) {
+            if (HttpServletRequest.class.isAssignableFrom(paramType)) {
+                arguments.add(req);
+            } else if (HttpServletResponse.class.isAssignableFrom(paramType)) {
+                arguments.add(resp);
+            } else {
+                if (dynamicIndex >= dynamicSize) {
+                    return null;
+                }
+
+                String rawValue = pathVariables.get(dynamicIndex++);
+                try {
+                    arguments.add(convertPathVariable(rawValue, paramType));
+                } catch (IllegalArgumentException conversionFailure) {
+                    return null;
+                }
+            }
+        }
+
+        if (dynamicIndex != dynamicSize) {
+            return null;
+        }
+
+        return arguments.toArray();
+    }
+
+    private Object convertPathVariable(String value, Class<?> targetType) {
+        if (targetType.equals(String.class)) {
+            return value;
+        }
+
+        if (targetType.equals(int.class) || targetType.equals(Integer.class)) {
+            return Integer.parseInt(value);
+        }
+        if (targetType.equals(long.class) || targetType.equals(Long.class)) {
+            return Long.parseLong(value);
+        }
+        if (targetType.equals(double.class) || targetType.equals(Double.class)) {
+            return Double.parseDouble(value);
+        }
+        if (targetType.equals(float.class) || targetType.equals(Float.class)) {
+            return Float.parseFloat(value);
+        }
+        if (targetType.equals(boolean.class) || targetType.equals(Boolean.class)) {
+            return Boolean.parseBoolean(value);
+        }
+        if (targetType.equals(short.class) || targetType.equals(Short.class)) {
+            return Short.parseShort(value);
+        }
+        if (targetType.equals(byte.class) || targetType.equals(Byte.class)) {
+            return Byte.parseByte(value);
+        }
+        if (targetType.equals(char.class) || targetType.equals(Character.class)) {
+            if (value.length() != 1) {
+                throw new IllegalArgumentException("Impossible de convertir en char : " + value);
+            }
+            return value.charAt(0);
+        }
+        if (targetType.isEnum()) {
+            @SuppressWarnings({"unchecked", "rawtypes"})
+            Class<? extends Enum<?>> enumType = (Class<? extends Enum<?>>) targetType.asSubclass(Enum.class);
+            try {
+                return Enum.valueOf((Class) enumType, value);
+            } catch (IllegalArgumentException ex) {
+                for (Enum<?> constant : enumType.getEnumConstants()) {
+                    if (constant.name().equalsIgnoreCase(value)) {
+                        return constant;
+                    }
+                }
+                throw ex;
+            }
+        }
+
+        if (targetType.equals(java.math.BigDecimal.class)) {
+            return new java.math.BigDecimal(value);
+        }
+        if (targetType.equals(java.math.BigInteger.class)) {
+            return new java.math.BigInteger(value);
+        }
+        if (targetType.equals(java.util.UUID.class)) {
+            return java.util.UUID.fromString(value);
+        }
+
+        if (targetType.equals(java.time.LocalDate.class)) {
+            return java.time.LocalDate.parse(value);
+        }
+        if (targetType.equals(java.time.LocalDateTime.class)) {
+            return java.time.LocalDateTime.parse(value);
+        }
+        if (targetType.equals(java.time.LocalTime.class)) {
+            return java.time.LocalTime.parse(value);
+        }
+        if (targetType.equals(java.time.OffsetDateTime.class)) {
+            return java.time.OffsetDateTime.parse(value);
+        }
+        if (targetType.equals(java.time.Instant.class)) {
+            return java.time.Instant.parse(value);
+        }
+        if (targetType.equals(java.util.Date.class)) {
+            try {
+                return java.util.Date.from(java.time.Instant.parse(value));
+            } catch (java.time.format.DateTimeParseException ignored) {
+                java.time.LocalDate localDate = java.time.LocalDate.parse(value);
+                return java.util.Date.from(localDate.atStartOfDay(java.time.ZoneId.systemDefault()).toInstant());
+            }
+        }
+
+        throw new UnsupportedOperationException("Type non supporté : " + targetType.getName());
+    }
+
+    private void executeHandler(Method handler, Object[] arguments,
+                                HttpServletRequest req, HttpServletResponse resp)
             throws ServletException, IOException {
         try {
-            // Instancier le contrôleur
             Class<?> controllerClass = handler.getDeclaringClass();
             Object controllerInstance = controllerClass.getDeclaredConstructor().newInstance();
-
-            // Rendre la méthode accessible
             handler.setAccessible(true);
-
-            // Invoquer la méthode
-            Class<?>[] paramTypes = handler.getParameterTypes();
-            Object result;
-
-            if (paramTypes.length == 2) {
-                // Méthode avec (HttpServletRequest, HttpServletResponse)
-                result = handler.invoke(controllerInstance, req, resp);
-            } else if (paramTypes.length == 1) {
-                // Méthode avec (HttpServletRequest) ou (HttpServletResponse)
-                if (HttpServletRequest.class.isAssignableFrom(paramTypes[0])) {
-                    result = handler.invoke(controllerInstance, req);
-                } else if (HttpServletResponse.class.isAssignableFrom(paramTypes[0])) {
-                    result = handler.invoke(controllerInstance, resp);
-                } else {
-                    throw new ServletException("Type de paramètre non supporté : " + paramTypes[0]);
-                }
-            } else if (paramTypes.length == 0) {
-                // Méthode sans paramètre
-                result = handler.invoke(controllerInstance);
-            } else {
-                throw new ServletException("Signature de méthode non supportée : " + handler);
-            }
-
-            // Sprint 4-bis & 5: Si la méthode retourne un ModelView, dispatcher vers la vue JSP
-            // IMPORTANT: Vérifier ModelView AVANT String pour éviter les problèmes de Content-Type
-            if (result instanceof ModelView && !resp.isCommitted()) {
-                ModelView modelView = (ModelView) result;
-                String viewPath = modelView.getVue();
-                
-                if (viewPath == null || viewPath.isBlank()) {
-                    throw new ServletException("ModelView.getVue() retourne null ou vide");
-                }
-                
-                // Sprint 5: Transférer toutes les données du ModelView vers le request
-                // Les données seront accessibles dans la JSP via request.getAttribute(key)
-                Map<String, Object> data = modelView.getData();
-                for (Map.Entry<String, Object> entry : data.entrySet()) {
-                    req.setAttribute(entry.getKey(), entry.getValue());
-                }
-                
-                // NE PAS définir de Content-Type avant le dispatch !
-                // Le JSP définira son propre Content-Type
-                RequestDispatcher dispatcher = req.getRequestDispatcher(viewPath);
-                dispatcher.forward(req, resp);
-            }
-            // Sprint 4: Si la méthode retourne un String, l'afficher avec PrintWriter
-            else if (result instanceof String && !resp.isCommitted()) {
-                resp.setContentType("text/plain;charset=UTF-8");
-                resp.getWriter().print(result);
-            }
-
+            Object result = handler.invoke(controllerInstance, arguments);
+            handleInvocationResult(result, req, resp);
         } catch (Exception e) {
             throw new ServletException("Erreur lors de l'invocation du handler : " + handler, e);
+        }
+    }
+
+    private void handleInvocationResult(Object result, HttpServletRequest req, HttpServletResponse resp)
+            throws ServletException, IOException {
+        if (result instanceof ModelView && !resp.isCommitted()) {
+            ModelView modelView = (ModelView) result;
+            String viewPath = modelView.getVue();
+
+            if (viewPath == null || viewPath.isBlank()) {
+                throw new ServletException("ModelView.getVue() retourne null ou vide");
+            }
+
+            Map<String, Object> data = modelView.getData();
+            for (Map.Entry<String, Object> entry : data.entrySet()) {
+                req.setAttribute(entry.getKey(), entry.getValue());
+            }
+
+            RequestDispatcher dispatcher = req.getRequestDispatcher(viewPath);
+            dispatcher.forward(req, resp);
+        } else if (result instanceof String && !resp.isCommitted()) {
+            resp.setContentType("text/plain;charset=UTF-8");
+            resp.getWriter().print(result);
         }
     }
 }

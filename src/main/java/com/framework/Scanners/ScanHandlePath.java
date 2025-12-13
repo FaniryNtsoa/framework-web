@@ -4,7 +4,7 @@ import com.framework.annotation.HandlePath;
 
 import java.lang.reflect.Method;
 import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -33,19 +33,15 @@ public final class ScanHandlePath {
 	/**
 	 * Build a path-to-method map for quick lookups at runtime.
 	 */
-	public static Map<String, Method> mapHandlePaths(Class<?> controllerClass) {
-		Map<String, Method> routes = new HashMap<>();
+	public static Map<String, UrlDetails> mapHandlePaths(Class<?> controllerClass) {
+		Map<String, UrlDetails> routes = new LinkedHashMap<>();
 
 		for (Method method : findHandleMethods(controllerClass)) {
 			HandlePath annotation = method.getAnnotation(HandlePath.class);
 			String rawPath = annotation.value();
 			String path = normalisePath(rawPath);
-
-			if (routes.containsKey(path)) {
-				throw new IllegalStateException("Duplicate HandlePath detected for path: " + path);
-			}
-
-			routes.put(path, method);
+			UrlDetails details = routes.computeIfAbsent(path, key -> new UrlDetails(controllerClass, key));
+			details.addMethod(method);
 		}
 
 		return routes;
