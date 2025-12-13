@@ -36,7 +36,7 @@ import java.util.Map;
  * (HTML, CSS, JS, images) en utilisant getServletContext().getResource()
  * pour vérifier si le fichier existe physiquement dans webapp/
  */
-@WebServlet("/*")
+@WebServlet("/")
 public class FrontServlet extends HttpServlet {
 
     private static final String CONTROLLERS_PACKAGES_PARAM = "controllers-packages";
@@ -118,27 +118,6 @@ public class FrontServlet extends HttpServlet {
                 continue;
             }
             if (invokeMatchingHandler(candidate, extractedValues, req, resp)) {
-                return;
-            }
-        }
-
-        // Si pas de contrôleur, vérifier si c'est un fichier statique (HTML, CSS, JS, images, etc.)
-        // getServletContext().getResource() vérifie si le fichier existe physiquement dans webapp/
-        URL resource = getServletContext().getResource(path);
-        if (resource != null) {
-            // Si c'est un fichier JSP, laisser le servlet JSP de Tomcat le gérer
-            if (path.endsWith(".jsp")) {
-                RequestDispatcher dispatcher = getServletContext().getNamedDispatcher("jsp");
-                if (dispatcher != null) {
-                    dispatcher.forward(req, resp);
-                    return;
-                }
-            }
-            
-            // C'est un fichier statique (HTML, CSS, JS, images), laisser le servlet par défaut de Tomcat le servir
-            RequestDispatcher dispatcher = getServletContext().getNamedDispatcher("default");
-            if (dispatcher != null) {
-                dispatcher.forward(req, resp);
                 return;
             }
         }
