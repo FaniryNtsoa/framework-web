@@ -138,7 +138,7 @@ public class FrontServlet extends HttpServlet {
         for (Method handler : urlDetails.getMethods()) {
             Object[] arguments;
             try {
-                arguments = resolveArguments(handler, pathVariables, req, resp);
+                arguments = resolveArguments(urlDetails, handler, pathVariables, req, resp);
             } catch (UnsupportedOperationException unsupported) {
                 throw new ServletException("Type de paramètre non supporté : " + handler, unsupported);
             }
@@ -154,40 +154,129 @@ public class FrontServlet extends HttpServlet {
         return false;
     }
 
-    private Object[] resolveArguments(Method handler, List<String> pathVariables,
+    private Object[] resolveArguments(UrlDetails urlDetails, Method handler, List<String> pathVariables,
                                       HttpServletRequest req, HttpServletResponse resp) {
-        Class<?>[] paramTypes = handler.getParameterTypes();
-        List<Object> arguments = new ArrayList<>(paramTypes.length);
-        int dynamicIndex = 0;
+        java.lang.reflect.Parameter[] parameters = handler.getParameters();
+        List<Object> arguments = new ArrayList<>(parameters.length);
+        List<String> dynamicNames = urlDetails.getParameterNames();
         int dynamicSize = pathVariables == null ? 0 : pathVariables.size();
+        Map<String, String> dynamicByName = new HashMap<>();
+        boolean[] dynamicUsed = new boolean[dynamicSize];
 
-        for (Class<?> paramType : paramTypes) {
-            if (HttpServletRequest.class.isAssignableFrom(paramType)) {
-                arguments.add(req);
-            } else if (HttpServletResponse.class.isAssignableFrom(paramType)) {
-                arguments.add(resp);
-            } else {
-                if (dynamicIndex >= dynamicSize) {
-                    return null;
-                }
-
-                String rawValue = pathVariables.get(dynamicIndex++);
-                try {
-                    arguments.add(convertPathVariable(rawValue, paramType));
-                } catch (IllegalArgumentException conversionFailure) {
-                    return null;
-                }
+        if (dynamicSize > 0 && dynamicNames.size() == dynamicSize) {
+            for (int i = 0; i < dynamicSize; i++) {
+                dynamicByName.put(dynamicNames.get(i), pathVariables.get(i));
             }
         }
 
-        if (dynamicIndex != dynamicSize) {
-            return null;
+        Map<String, String[]> requestParams = req.getParameterMap();
+
+        for (java.lang.reflect.Parameter parameter : parameters) {
+            Class<?> paramType = parameter.getType();
+
+            if (HttpServletRequest.class.isAssignableFrom(paramType)) {
+                arguments.add(req);
+                continue;
+            }
+
+            if (HttpServletResponse.class.isAssignableFrom(paramType)) {
+                arguments.add(resp);
+                continue;
+            }
+
+            String paramName = parameter.getName();
+            String rawValue = null;
+
+            if (paramName != null && dynamicByName.containsKey(paramName)) {
+                rawValue = dynamicByName.get(paramName);
+                int dynamicIndex = dynamicNames.indexOf(paramName);
+                if (dynamicIndex >= 0 && dynamicIndex < dynamicUsed.length) {
+                    dynamicUsed[dynamicIndex] = true;
+                }
+            }
+
+            if (rawValue == null && dynamicSize > 0) {
+                for (int i = 0; i < dynamicSize; i++) {
+                    if (!dynamicUsed[i]) {
+                        rawValue = pathVariables.get(i);
+                        dynamicUsed[i] = true;
+                        break;
+                    }
+                }
+            }
+
+            if (rawValue == null && paramName != null) {
+                String[] candidates = requestParams.get(paramName);
+                if (candidates != null && candidates.length > 0) {
+                    rawValue = candidates[0];
+                }
+            }
+
+            if (rawValue == null) {
+                arguments.add(defaultValueFor(paramType));
+                continue;
+            }
+
+            if (rawValue.isEmpty()) {
+                arguments.add(emptyValueFor(paramType));
+                continue;
+            }
+
+            try {
+                arguments.add(convertParameterValue(rawValue, paramType));
+            } catch (IllegalArgumentException conversionFailure) {
+                return null;
+            }
+        }
+
+        for (boolean used : dynamicUsed) {
+            if (!used) {
+                return null;
+            }
         }
 
         return arguments.toArray();
     }
 
-    private Object convertPathVariable(String value, Class<?> targetType) {
+    private Object defaultValueFor(Class<?> targetType) {
+        if (!targetType.isPrimitive()) {
+            return null;
+        }
+        if (targetType.equals(boolean.class)) {
+            return Boolean.FALSE;
+        }
+        if (targetType.equals(char.class)) {
+            return Character.valueOf('\0');
+        }
+        if (targetType.equals(byte.class)) {
+            return Byte.valueOf((byte) 0);
+        }
+        if (targetType.equals(short.class)) {
+            return Short.valueOf((short) 0);
+        }
+        if (targetType.equals(int.class)) {
+            return Integer.valueOf(0);
+        }
+        if (targetType.equals(long.class)) {
+            return Long.valueOf(0L);
+        }
+        if (targetType.equals(float.class)) {
+            return Float.valueOf(0F);
+        }
+        if (targetType.equals(double.class)) {
+            return Double.valueOf(0D);
+        }
+        return null;
+    }
+
+    private Object emptyValueFor(Class<?> targetType) {
+        if (targetType.equals(String.class)) {
+            return "";
+        }
+        return defaultValueFor(targetType);
+    }
+
+    private Object convertParameterValue(String value, Class<?> targetType) {
         if (targetType.equals(String.class)) {
             return value;
         }
