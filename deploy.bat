@@ -41,7 +41,7 @@ if not exist sources.txt (
 )
 
 :: Compilation des fichiers Java avec Jakarta Servlet API
-javac -cp "%SERVLET_API_JAR%" -d "%WEB_INF%\classes" @"sources.txt"
+javac -parameters -cp "%SERVLET_API_JAR%" -d "%WEB_INF%\classes" @"sources.txt"
 if errorlevel 1 (
     echo Erreur lors de la compilation des fichiers Java.
     pause
