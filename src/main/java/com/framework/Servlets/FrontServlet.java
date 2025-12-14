@@ -159,17 +159,8 @@ public class FrontServlet extends HttpServlet {
                                       HttpServletRequest req, HttpServletResponse resp) {
         java.lang.reflect.Parameter[] parameters = handler.getParameters();
         List<Object> arguments = new ArrayList<>(parameters.length);
-        List<String> dynamicNames = urlDetails.getParameterNames();
-        int dynamicSize = pathVariables == null ? 0 : pathVariables.size();
-        Map<String, String> dynamicByName = new HashMap<>();
-        boolean[] dynamicUsed = new boolean[dynamicSize];
-
-        if (dynamicSize > 0 && dynamicNames.size() == dynamicSize) {
-            for (int i = 0; i < dynamicSize; i++) {
-                dynamicByName.put(dynamicNames.get(i), pathVariables.get(i));
-            }
-        }
-
+        // Sprint 6-ter: extraire les segments dynamiques {variable} de l'URL
+        List<PathVariableValue> dynamicSegments = buildPathVariableValues(urlDetails.getParameterNames(), pathVariables);
         Map<String, String[]> requestParams = req.getParameterMap();
 
         for (java.lang.reflect.Parameter parameter : parameters) {
@@ -185,6 +176,7 @@ public class FrontServlet extends HttpServlet {
                 continue;
             }
 
+            // Sprint 6-bis: associer un nom explicite via @RequestParam
             RequestParam requestParam = parameter.getAnnotation(RequestParam.class);
             String annotatedName = null;
             if (requestParam != null) {
@@ -211,28 +203,16 @@ public class FrontServlet extends HttpServlet {
                 candidateNames = new String[0];
             }
 
+            // Sprint 6-ter: privilégier la correspondance par nom sur les segments d'URL
             for (String candidate : candidateNames) {
-                if (candidate == null || !dynamicByName.containsKey(candidate)) {
-                    continue;
-                }
-                rawValue = dynamicByName.get(candidate);
-                int dynamicIndex = dynamicNames.indexOf(candidate);
-                if (dynamicIndex >= 0 && dynamicIndex < dynamicUsed.length) {
-                    dynamicUsed[dynamicIndex] = true;
-                }
-                break;
-            }
-
-            if (rawValue == null && dynamicSize > 0) {
-                for (int i = 0; i < dynamicSize; i++) {
-                    if (!dynamicUsed[i]) {
-                        rawValue = pathVariables.get(i);
-                        dynamicUsed[i] = true;
-                        break;
-                    }
+                PathVariableValue matched = consumePathVariableByName(dynamicSegments, candidate);
+                if (matched != null) {
+                    rawValue = matched.value();
+                    break;
                 }
             }
 
+            // Sprint 6: rechercher ensuite les paramètres dans la query string / formulaire
             if (rawValue == null && candidateNames.length > 0) {
                 for (String candidate : candidateNames) {
                     if (candidate == null) {
@@ -243,6 +223,14 @@ public class FrontServlet extends HttpServlet {
                         rawValue = candidates[0];
                         break;
                     }
+                }
+            }
+
+            // Sprint 6-ter: si aucun @RequestParam, consommer le prochain segment dynamique
+            if (rawValue == null && requestParam == null) {
+                PathVariableValue byOrder = consumeFirstPathVariable(dynamicSegments);
+                if (byOrder != null) {
+                    rawValue = byOrder.value();
                 }
             }
 
@@ -263,13 +251,58 @@ public class FrontServlet extends HttpServlet {
             }
         }
 
-        for (boolean used : dynamicUsed) {
-            if (!used) {
-                return null;
+        if (!dynamicSegments.isEmpty()) {
+            for (PathVariableValue segment : dynamicSegments) {
+                if (!segment.isUsed()) {
+                    return null;
+                }
             }
         }
 
         return arguments.toArray();
+    }
+
+    private static List<PathVariableValue> buildPathVariableValues(List<String> names, List<String> values) {
+        List<PathVariableValue> segments = new ArrayList<>();
+        if (values == null || values.isEmpty()) {
+            return segments;
+        }
+
+        int nameCount = names == null ? 0 : names.size();
+        for (int i = 0; i < values.size(); i++) {
+            String segmentName = i < nameCount ? names.get(i) : null;
+            segments.add(new PathVariableValue(segmentName, values.get(i)));
+        }
+        return segments;
+    }
+
+    private static PathVariableValue consumePathVariableByName(List<PathVariableValue> segments, String candidate) {
+        if (segments == null || segments.isEmpty() || candidate == null) {
+            return null;
+        }
+        for (PathVariableValue segment : segments) {
+            if (segment.isUsed()) {
+                continue;
+            }
+            if (segment.matches(candidate)) {
+                segment.markUsed();
+                return segment;
+            }
+        }
+        return null;
+    }
+
+    private static PathVariableValue consumeFirstPathVariable(List<PathVariableValue> segments) {
+        if (segments == null || segments.isEmpty()) {
+            return null;
+        }
+        for (PathVariableValue segment : segments) {
+            if (!segment.isUsed()) {
+                segment.markUsed();
+                return segment;
+            }
+        }
+        return null;
     }
 
     private Object defaultValueFor(Class<?> targetType) {
@@ -392,6 +425,36 @@ public class FrontServlet extends HttpServlet {
         }
 
         throw new UnsupportedOperationException("Type non supporté : " + targetType.getName());
+    }
+
+    private static final class PathVariableValue {
+        private final String name;
+        private final String value;
+        private boolean used;
+
+        PathVariableValue(String name, String value) {
+            this.name = name == null ? null : name.trim();
+            this.value = value;
+        }
+
+        boolean matches(String candidate) {
+            if (candidate == null || name == null) {
+                return false;
+            }
+            return name.equalsIgnoreCase(candidate.trim());
+        }
+
+        boolean isUsed() {
+            return used;
+        }
+
+        void markUsed() {
+            this.used = true;
+        }
+
+        String value() {
+            return value;
+        }
     }
 
     private void executeHandler(Method handler, Object[] arguments,

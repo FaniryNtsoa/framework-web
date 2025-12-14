@@ -6,4 +6,5 @@ com\framework\Servlets\FrontServlet.class
 com\framework\annotation\HandlePath.class
 com\framework\util\ModelView.class
 com\framework\Scanners\ScanHandlePath.class
+com\framework\Servlets\FrontServlet$PathVariableValue.class
 com\framework\Scanners\UrlDetails.class
