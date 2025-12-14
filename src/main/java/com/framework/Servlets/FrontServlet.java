@@ -2,6 +2,7 @@ package com.framework.Servlets;
 
 import com.framework.Scanners.ScanControllers;
 import com.framework.Scanners.UrlDetails;
+import com.framework.annotation.RequestParam;
 import com.framework.util.ModelView;
 
 import jakarta.servlet.RequestDispatcher;
@@ -184,15 +185,42 @@ public class FrontServlet extends HttpServlet {
                 continue;
             }
 
+            RequestParam requestParam = parameter.getAnnotation(RequestParam.class);
+            String annotatedName = null;
+            if (requestParam != null) {
+                annotatedName = requestParam.value();
+                if (annotatedName != null) {
+                    annotatedName = annotatedName.trim();
+                    if (annotatedName.isEmpty()) {
+                        annotatedName = null;
+                    }
+                }
+            }
+
             String paramName = parameter.getName();
             String rawValue = null;
 
-            if (paramName != null && dynamicByName.containsKey(paramName)) {
-                rawValue = dynamicByName.get(paramName);
-                int dynamicIndex = dynamicNames.indexOf(paramName);
+            String[] candidateNames;
+            if (annotatedName != null && paramName != null && !annotatedName.equals(paramName)) {
+                candidateNames = new String[]{annotatedName, paramName};
+            } else if (annotatedName != null) {
+                candidateNames = new String[]{annotatedName};
+            } else if (paramName != null) {
+                candidateNames = new String[]{paramName};
+            } else {
+                candidateNames = new String[0];
+            }
+
+            for (String candidate : candidateNames) {
+                if (candidate == null || !dynamicByName.containsKey(candidate)) {
+                    continue;
+                }
+                rawValue = dynamicByName.get(candidate);
+                int dynamicIndex = dynamicNames.indexOf(candidate);
                 if (dynamicIndex >= 0 && dynamicIndex < dynamicUsed.length) {
                     dynamicUsed[dynamicIndex] = true;
                 }
+                break;
             }
 
             if (rawValue == null && dynamicSize > 0) {
@@ -205,10 +233,16 @@ public class FrontServlet extends HttpServlet {
                 }
             }
 
-            if (rawValue == null && paramName != null) {
-                String[] candidates = requestParams.get(paramName);
-                if (candidates != null && candidates.length > 0) {
-                    rawValue = candidates[0];
+            if (rawValue == null && candidateNames.length > 0) {
+                for (String candidate : candidateNames) {
+                    if (candidate == null) {
+                        continue;
+                    }
+                    String[] candidates = requestParams.get(candidate);
+                    if (candidates != null && candidates.length > 0) {
+                        rawValue = candidates[0];
+                        break;
+                    }
                 }
             }
 
