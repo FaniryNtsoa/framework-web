@@ -1,4 +1,5 @@
 com\framework\annotation\Controller.class
+com\framework\annotation\RequestParam.class
 com\framework\Scanners\ScanControllers.class
 com\framework\Scanners\ClassScanner.class
 com\framework\Servlets\FrontServlet.class
