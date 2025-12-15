@@ -2,6 +2,8 @@ package com.framework.Servlets;
 
 import com.framework.Scanners.ScanControllers;
 import com.framework.Scanners.UrlDetails;
+import com.framework.Scanners.UrlDetails.HandlerMethod;
+import com.framework.annotation.HttpMethodType;
 import com.framework.annotation.RequestParam;
 import com.framework.util.ModelView;
 
@@ -136,7 +138,14 @@ public class FrontServlet extends HttpServlet {
     private boolean invokeMatchingHandler(UrlDetails urlDetails, List<String> pathVariables,
                                           HttpServletRequest req, HttpServletResponse resp)
             throws ServletException, IOException {
-        for (Method handler : urlDetails.getMethods()) {
+        HttpMethodType requestMethod = HttpMethodType.fromRequestMethod(req.getMethod());
+
+        for (HandlerMethod handlerMethod : urlDetails.getHandlerMethods()) {
+            if (!handlerMethod.matches(requestMethod)) {
+                continue;
+            }
+
+            Method handler = handlerMethod.getMethod();
             Object[] arguments;
             try {
                 arguments = resolveArguments(urlDetails, handler, pathVariables, req, resp);
