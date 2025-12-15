@@ -16,13 +16,21 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 
 import java.io.IOException;
+import java.lang.reflect.Array;
 import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
+import java.lang.reflect.ParameterizedType;
+import java.lang.reflect.Type;
 import java.net.URL;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * FrontServlet - Sprint 1, 2, 2-bis, 3, 4, 4-bis, 5
@@ -185,6 +193,11 @@ public class FrontServlet extends HttpServlet {
                 continue;
             }
 
+            if (Map.class.isAssignableFrom(paramType)) {
+                arguments.add(buildRequestParameterMap(parameter, requestParams));
+                continue;
+            }
+
             // Sprint 6-bis: associer un nom explicite via @RequestParam
             RequestParam requestParam = parameter.getAnnotation(RequestParam.class);
             String annotatedName = null;
@@ -269,6 +282,150 @@ public class FrontServlet extends HttpServlet {
         }
 
         return arguments.toArray();
+    }
+
+    private Object buildRequestParameterMap(java.lang.reflect.Parameter parameter,
+                                            Map<String, String[]> requestParams) {
+        Class<?> declaredType = parameter.getType();
+        Map<Object, Object> target = instantiateMap(declaredType);
+
+        Type parameterType = parameter.getParameterizedType();
+        Type keyTypeToken = extractTypeArgument(parameterType, 0);
+        Type valueTypeToken = extractTypeArgument(parameterType, 1);
+
+        for (Map.Entry<String, String[]> entry : requestParams.entrySet()) {
+            Object key = convertMapKey(entry.getKey(), keyTypeToken);
+            Object value = convertMapValue(entry.getValue(), valueTypeToken);
+            target.put(key, value);
+        }
+
+        return target;
+    }
+
+    private Map<Object, Object> instantiateMap(Class<?> mapType) {
+        if (mapType == null || mapType.isInterface() || Modifier.isAbstract(mapType.getModifiers())) {
+            return new LinkedHashMap<>();
+        }
+
+        try {
+            @SuppressWarnings("unchecked")
+            Map<Object, Object> instance = (Map<Object, Object>) mapType.getDeclaredConstructor().newInstance();
+            return instance;
+        } catch (Exception ignored) {
+            return new LinkedHashMap<>();
+        }
+    }
+
+    private Object convertMapKey(String key, Type keyTypeToken) {
+        Class<?> keyType = resolveClass(keyTypeToken);
+        if (keyType == null || keyType.equals(Object.class) || keyType.equals(String.class)) {
+            return key;
+        }
+        return convertParameterValue(key, keyType);
+    }
+
+    private Object convertMapValue(String[] rawValues, Type valueTypeToken) {
+        if (rawValues == null) {
+            return null;
+        }
+
+        Class<?> rawClass = resolveClass(valueTypeToken);
+
+        if (rawClass == null || rawClass.equals(Object.class)) {
+            if (rawValues.length == 0) {
+                return null;
+            }
+            if (rawValues.length == 1) {
+                return rawValues[0];
+            }
+            List<String> multiple = new ArrayList<>(rawValues.length);
+            Collections.addAll(multiple, rawValues);
+            return multiple;
+        }
+
+        if (rawClass.isArray()) {
+            Class<?> component = rawClass.getComponentType();
+            Object array = Array.newInstance(component, rawValues.length);
+            for (int i = 0; i < rawValues.length; i++) {
+                Object element = rawValues[i] == null || rawValues[i].isEmpty()
+                        ? emptyValueFor(component)
+                        : convertParameterValue(rawValues[i], component);
+                Array.set(array, i, element);
+            }
+            return array;
+        }
+
+        if (Collection.class.isAssignableFrom(rawClass)) {
+            Collection<Object> collection = instantiateCollection(rawClass);
+            Type elementTypeToken = extractTypeArgument(valueTypeToken, 0);
+            Class<?> elementType = resolveClass(elementTypeToken);
+            for (String value : rawValues) {
+                if (value == null || value.isEmpty()) {
+                    collection.add(emptyValueFor(elementType == null ? String.class : elementType));
+                } else if (elementType == null || elementType.equals(Object.class) || elementType.equals(String.class)) {
+                    collection.add(value);
+                } else {
+                    collection.add(convertParameterValue(value, elementType));
+                }
+            }
+            return collection;
+        }
+
+        if (rawValues.length == 0) {
+            return defaultValueFor(rawClass);
+        }
+
+        String candidate = rawValues[0];
+        if (candidate == null) {
+            return defaultValueFor(rawClass);
+        }
+        if (candidate.isEmpty()) {
+            return emptyValueFor(rawClass);
+        }
+        return convertParameterValue(candidate, rawClass);
+    }
+
+    private Collection<Object> instantiateCollection(Class<?> collectionType) {
+        if (collectionType == null || collectionType.isInterface() || Modifier.isAbstract(collectionType.getModifiers())) {
+            if (Set.class.isAssignableFrom(collectionType)) {
+                return new LinkedHashSet<>();
+            }
+            return new ArrayList<>();
+        }
+
+        try {
+            @SuppressWarnings("unchecked")
+            Collection<Object> instance = (Collection<Object>) collectionType.getDeclaredConstructor().newInstance();
+            return instance;
+        } catch (Exception ignored) {
+            if (Set.class.isAssignableFrom(collectionType)) {
+                return new LinkedHashSet<>();
+            }
+            return new ArrayList<>();
+        }
+    }
+
+    private Type extractTypeArgument(Type type, int index) {
+        if (type instanceof ParameterizedType parameterized) {
+            Type[] arguments = parameterized.getActualTypeArguments();
+            if (index >= 0 && index < arguments.length) {
+                return arguments[index];
+            }
+        }
+        return Object.class;
+    }
+
+    private Class<?> resolveClass(Type type) {
+        if (type instanceof Class<?>) {
+            return (Class<?>) type;
+        }
+        if (type instanceof ParameterizedType parameterized) {
+            Type raw = parameterized.getRawType();
+            if (raw instanceof Class<?>) {
+                return (Class<?>) raw;
+            }
+        }
+        return Object.class;
     }
 
     private static List<PathVariableValue> buildPathVariableValues(List<String> names, List<String> values) {
