@@ -17,6 +17,7 @@ import jakarta.servlet.http.HttpServletResponse;
 
 import java.io.IOException;
 import java.lang.reflect.Array;
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.lang.reflect.ParameterizedType;
@@ -200,30 +201,17 @@ public class FrontServlet extends HttpServlet {
 
             // Sprint 6-bis: associer un nom explicite via @RequestParam
             RequestParam requestParam = parameter.getAnnotation(RequestParam.class);
-            String annotatedName = null;
-            if (requestParam != null) {
-                annotatedName = requestParam.value();
-                if (annotatedName != null) {
-                    annotatedName = annotatedName.trim();
-                    if (annotatedName.isEmpty()) {
-                        annotatedName = null;
-                    }
+            String[] candidateNames = resolveCandidateNames(parameter, requestParam, requestParams);
+
+            if (isComplexParameterType(paramType)) {
+                Object complexArgument = bindComplexObject(paramType, candidateNames, requestParams);
+                if (complexArgument != null) {
+                    arguments.add(complexArgument);
+                    continue;
                 }
             }
 
-            String paramName = parameter.getName();
             String rawValue = null;
-
-            String[] candidateNames;
-            if (annotatedName != null && paramName != null && !annotatedName.equals(paramName)) {
-                candidateNames = new String[]{annotatedName, paramName};
-            } else if (annotatedName != null) {
-                candidateNames = new String[]{annotatedName};
-            } else if (paramName != null) {
-                candidateNames = new String[]{paramName};
-            } else {
-                candidateNames = new String[0];
-            }
 
             // Sprint 6-ter: privilégier la correspondance par nom sur les segments d'URL
             for (String candidate : candidateNames) {
@@ -282,6 +270,510 @@ public class FrontServlet extends HttpServlet {
         }
 
         return arguments.toArray();
+    }
+
+    private String[] resolveCandidateNames(java.lang.reflect.Parameter parameter,
+                                          RequestParam requestParam,
+                                          Map<String, String[]> requestParams) {
+        Set<String> names = new LinkedHashSet<>();
+        if (requestParam != null) {
+            String annotated = normaliseCandidate(requestParam.value());
+            if (annotated != null) {
+                names.add(annotated);
+            }
+        }
+
+        if (parameter.isNamePresent()) {
+            String paramName = normaliseCandidate(parameter.getName());
+            if (paramName != null) {
+                names.add(paramName);
+            }
+        }
+
+        if (names.isEmpty()) {
+            String inferred = inferRootName(parameter, requestParams);
+            if (inferred != null) {
+                names.add(inferred);
+            }
+        }
+
+        return names.toArray(new String[0]);
+    }
+
+    private String inferRootName(java.lang.reflect.Parameter parameter, Map<String, String[]> requestParams) {
+        if (requestParams == null || requestParams.isEmpty()) {
+            return null;
+        }
+
+        Set<String> roots = new LinkedHashSet<>();
+        for (String key : requestParams.keySet()) {
+            if (key == null || key.isEmpty()) {
+                continue;
+            }
+            int dotIndex = key.indexOf('.');
+            int bracketIndex = key.indexOf('[');
+
+            int separatorIndex = -1;
+            if (dotIndex >= 0) {
+                separatorIndex = dotIndex;
+            }
+            if (bracketIndex >= 0 && (separatorIndex < 0 || bracketIndex < separatorIndex)) {
+                separatorIndex = bracketIndex;
+            }
+
+            if (separatorIndex < 0) {
+                continue;
+            }
+
+            String candidate = key.substring(0, separatorIndex).trim();
+            if (!candidate.isEmpty()) {
+                roots.add(candidate);
+            }
+        }
+
+        if (roots.size() == 1) {
+            return roots.iterator().next();
+        }
+
+        if (roots.isEmpty() && requestParams.size() == 1) {
+            String onlyKey = normaliseCandidate(requestParams.keySet().iterator().next());
+            if (onlyKey != null) {
+                return onlyKey;
+            }
+        }
+
+        if (roots.size() > 1) {
+            String parameterTypeCandidate = decapitalize(parameter.getType().getSimpleName());
+            if (roots.contains(parameterTypeCandidate)) {
+                return parameterTypeCandidate;
+            }
+        }
+
+        return null;
+    }
+
+    private String decapitalize(String source) {
+        if (source == null || source.isEmpty()) {
+            return source;
+        }
+        if (source.length() == 1) {
+            return source.toLowerCase();
+        }
+        if (Character.isLowerCase(source.charAt(0))) {
+            return source;
+        }
+        char[] chars = source.toCharArray();
+        chars[0] = Character.toLowerCase(chars[0]);
+        return new String(chars);
+    }
+
+    private String normaliseCandidate(String name) {
+        if (name == null) {
+            return null;
+        }
+        String trimmed = name.trim();
+        return trimmed.isEmpty() ? null : trimmed;
+    }
+
+    private boolean isComplexParameterType(Class<?> paramType) {
+        if (paramType == null) {
+            return false;
+        }
+        if (HttpServletRequest.class.isAssignableFrom(paramType)
+                || HttpServletResponse.class.isAssignableFrom(paramType)) {
+            return false;
+        }
+        if (Map.class.isAssignableFrom(paramType) || Collection.class.isAssignableFrom(paramType)) {
+            return false;
+        }
+        if (paramType.isArray() || paramType.isPrimitive()) {
+            return false;
+        }
+        if (isSimpleValueType(paramType)) {
+            return false;
+        }
+        if (paramType.getPackageName().startsWith("java.")) {
+            return false;
+        }
+        return true;
+    }
+
+    private Object bindComplexObject(Class<?> targetType, String[] candidateNames,
+                                     Map<String, String[]> requestParams) {
+        Map<String, String[]> prefixedParams = collectPrefixedParameters(candidateNames, requestParams);
+        if (prefixedParams.isEmpty()) {
+            return null;
+        }
+
+        Object instance = instantiateClass(targetType);
+        for (Map.Entry<String, String[]> entry : prefixedParams.entrySet()) {
+            String propertyPath = entry.getKey();
+            if (propertyPath == null || propertyPath.isEmpty()) {
+                continue;
+            }
+            assignPropertyValue(instance, propertyPath, entry.getValue());
+        }
+        return instance;
+    }
+
+    private Map<String, String[]> collectPrefixedParameters(String[] candidateNames,
+                                                            Map<String, String[]> requestParams) {
+        Map<String, String[]> collected = new LinkedHashMap<>();
+        if (candidateNames == null || candidateNames.length == 0 || requestParams.isEmpty()) {
+            return collected;
+        }
+
+        for (String candidate : candidateNames) {
+            if (candidate == null || candidate.isEmpty()) {
+                continue;
+            }
+            String dotPrefix = candidate + ".";
+            String bracketPrefix = candidate + "[";
+
+            for (Map.Entry<String, String[]> entry : requestParams.entrySet()) {
+                String key = entry.getKey();
+                if (key == null) {
+                    continue;
+                }
+
+                if (key.equals(candidate)) {
+                    collected.putIfAbsent("", entry.getValue());
+                    continue;
+                }
+
+                if (key.startsWith(dotPrefix)) {
+                    collected.putIfAbsent(key.substring(dotPrefix.length()), entry.getValue());
+                    continue;
+                }
+
+                if (key.startsWith(bracketPrefix)) {
+                    collected.putIfAbsent(key.substring(candidate.length()), entry.getValue());
+                }
+            }
+        }
+
+        return collected;
+    }
+
+    private void assignPropertyValue(Object target, String propertyPath, String[] values) {
+        List<PathSegment> segments = parsePathSegments(propertyPath);
+        if (segments.isEmpty()) {
+            return;
+        }
+
+        try {
+            applySegments(target, segments, 0, values);
+        } catch (ReflectiveOperationException ex) {
+            throw new UnsupportedOperationException(
+                    "Impossible de binder la propriété '" + propertyPath + "' pour "
+                            + target.getClass().getName(), ex);
+        }
+    }
+
+    private List<PathSegment> parsePathSegments(String path) {
+        List<PathSegment> segments = new ArrayList<>();
+        if (path == null) {
+            return segments;
+        }
+
+        int depth = 0;
+        StringBuilder current = new StringBuilder();
+        for (int i = 0; i < path.length(); i++) {
+            char ch = path.charAt(i);
+            if (ch == '.' && depth == 0) {
+                if (current.length() > 0) {
+                    segments.add(parsePathSegment(current.toString()));
+                    current.setLength(0);
+                }
+                continue;
+            }
+            if (ch == '[') {
+                depth++;
+            } else if (ch == ']') {
+                depth = Math.max(0, depth - 1);
+            }
+            current.append(ch);
+        }
+
+        if (current.length() > 0) {
+            segments.add(parsePathSegment(current.toString()));
+        }
+
+        return segments;
+    }
+
+    private PathSegment parsePathSegment(String token) {
+        if (token == null) {
+            return new PathSegment("", List.of());
+        }
+
+        String trimmed = token.trim();
+        if (trimmed.isEmpty()) {
+            return new PathSegment("", List.of());
+        }
+
+        List<Integer> indexes = new ArrayList<>();
+        int bracketIndex = trimmed.indexOf('[');
+        String name = bracketIndex < 0 ? trimmed : trimmed.substring(0, bracketIndex).trim();
+        int cursor = bracketIndex;
+        while (cursor >= 0 && cursor < trimmed.length()) {
+            int closing = trimmed.indexOf(']', cursor);
+            if (closing < 0) {
+                throw new IllegalArgumentException("Segment de propriété invalide: " + token);
+            }
+            String indexText = trimmed.substring(cursor + 1, closing).trim();
+            if (indexText.isEmpty()) {
+                throw new IllegalArgumentException("Index vide dans le segment: " + token);
+            }
+            indexes.add(Integer.parseInt(indexText));
+            cursor = trimmed.indexOf('[', closing + 1);
+        }
+
+        return new PathSegment(name, indexes);
+    }
+
+    private void applySegments(Object currentTarget, List<PathSegment> segments, int position, String[] values)
+            throws ReflectiveOperationException {
+        PathSegment segment = segments.get(position);
+        boolean last = position == segments.size() - 1;
+
+        if (segment.getName().isEmpty()) {
+            throw new UnsupportedOperationException("Nom de propriété vide dans la chaîne de binding");
+        }
+
+        Field field = findField(currentTarget.getClass(), segment.getName());
+        if (field == null) {
+            throw new UnsupportedOperationException(
+                    "Propriété '" + segment.getName() + "' introuvable dans "
+                            + currentTarget.getClass().getName());
+        }
+
+        Class<?> fieldType = field.getType();
+        Object currentValue = field.get(currentTarget);
+
+        if (!segment.getIndexes().isEmpty()) {
+            if (segment.getIndexes().size() > 1) {
+                throw new UnsupportedOperationException("Les indices multiples ne sont pas supportés pour "
+                        + segment.getName());
+            }
+
+            if (!Collection.class.isAssignableFrom(fieldType)) {
+                throw new UnsupportedOperationException("La propriété '" + segment.getName()
+                        + "' doit être un java.util.Collection pour utiliser un index");
+            }
+
+            List<Object> list = ensureListInstance(currentTarget, field, currentValue, fieldType);
+            int index = segment.getIndexes().get(0);
+            ensureListSize(list, index);
+
+            Type elementTypeToken = extractTypeArgument(field.getGenericType(), 0);
+            Class<?> elementType = resolveClass(elementTypeToken);
+            if (elementType == null || elementType.equals(Object.class)) {
+                elementType = String.class;
+            }
+
+            if (last) {
+                Object converted = convertValueArray(values, elementType);
+                list.set(index, converted);
+                return;
+            }
+
+            Object nested = list.get(index);
+            if (nested == null) {
+                nested = instantiateClass(elementType);
+                list.set(index, nested);
+            }
+
+            applySegments(nested, segments, position + 1, values);
+            return;
+        }
+
+        if (last) {
+            if (Collection.class.isAssignableFrom(fieldType)) {
+                Collection<Object> collection = instantiateCollection(fieldType);
+                Type elementTypeToken = extractTypeArgument(field.getGenericType(), 0);
+                Class<?> elementType = resolveClass(elementTypeToken);
+                if (elementType == null || elementType.equals(Object.class)) {
+                    elementType = String.class;
+                }
+                for (String raw : values) {
+                    collection.add(convertIndividualValue(raw, elementType));
+                }
+                field.set(currentTarget, collection);
+                return;
+            }
+
+            if (fieldType.isArray()) {
+                Class<?> componentType = fieldType.getComponentType();
+                Object array = Array.newInstance(componentType, values.length);
+                for (int i = 0; i < values.length; i++) {
+                    Array.set(array, i, convertIndividualValue(values[i], componentType));
+                }
+                field.set(currentTarget, array);
+                return;
+            }
+
+            field.set(currentTarget, convertIndividualValue(singleValue(values), fieldType));
+            return;
+        }
+
+        Object nested = currentValue;
+        if (nested == null) {
+            nested = instantiateClass(fieldType);
+            field.set(currentTarget, nested);
+        }
+
+        applySegments(nested, segments, position + 1, values);
+    }
+
+    private Field findField(Class<?> type, String name) {
+        Class<?> search = type;
+        while (search != null && !Object.class.equals(search)) {
+            try {
+                Field field = search.getDeclaredField(name);
+                field.setAccessible(true);
+                return field;
+            } catch (NoSuchFieldException ignored) {
+                search = search.getSuperclass();
+            }
+        }
+        return null;
+    }
+
+    private Object instantiateClass(Class<?> type) {
+        if (type.isInterface() || Modifier.isAbstract(type.getModifiers())) {
+            throw new UnsupportedOperationException("Impossible d'instancier le type " + type.getName());
+        }
+        try {
+            return type.getDeclaredConstructor().newInstance();
+        } catch (Exception e) {
+            throw new UnsupportedOperationException("Impossible d'instancier le type " + type.getName(), e);
+        }
+    }
+
+    private List<Object> ensureListInstance(Object owner, Field field, Object currentValue, Class<?> fieldType)
+            throws IllegalAccessException {
+        if (currentValue instanceof List<?>) {
+            @SuppressWarnings("unchecked")
+            List<Object> existing = (List<Object>) currentValue;
+            return existing;
+        }
+
+        Collection<?> base;
+        if (currentValue instanceof Collection<?>) {
+            base = new ArrayList<>((Collection<?>) currentValue);
+        } else {
+            base = instantiateCollection(fieldType);
+        }
+
+        if (!(base instanceof List<?>)) {
+            throw new UnsupportedOperationException("La collection '" + field.getName()
+                    + "' doit implémenter java.util.List pour supporter l'indexation");
+        }
+
+        @SuppressWarnings("unchecked")
+        List<Object> list = (List<Object>) base;
+        field.set(owner, list);
+        return list;
+    }
+
+    private void ensureListSize(List<Object> list, int index) {
+        while (list.size() <= index) {
+            list.add(null);
+        }
+    }
+
+    private Object convertValueArray(String[] values, Class<?> targetType) {
+        if (targetType == null || targetType.equals(Object.class)) {
+            return singleValue(values);
+        }
+        if (targetType.equals(String.class)) {
+            return singleValue(values);
+        }
+        if (isSimpleValueType(targetType) || targetType.isEnum()) {
+            return convertIndividualValue(singleValue(values), targetType);
+        }
+        throw new UnsupportedOperationException("Type complexe non supporté pour la conversion de liste: "
+                + targetType.getName());
+    }
+
+    private Object convertIndividualValue(String raw, Class<?> targetType) {
+        if (targetType == null || targetType.equals(Object.class)) {
+            return raw;
+        }
+        if (targetType.equals(String.class)) {
+            return raw == null ? "" : raw;
+        }
+        if (raw == null) {
+            return defaultValueFor(targetType);
+        }
+        if (raw.isEmpty()) {
+            return emptyValueFor(targetType);
+        }
+        if (isSimpleValueType(targetType) || targetType.isEnum()) {
+            return convertParameterValue(raw, targetType);
+        }
+        throw new UnsupportedOperationException("Impossible de convertir la valeur vers le type "
+                + targetType.getName());
+    }
+
+    private String singleValue(String[] values) {
+        if (values == null || values.length == 0) {
+            return null;
+        }
+        return values[0];
+    }
+
+    private boolean isSimpleValueType(Class<?> type) {
+        if (type == null) {
+            return true;
+        }
+        if (type.isPrimitive()) {
+            return true;
+        }
+        if (type.isEnum()) {
+            return true;
+        }
+        return SIMPLE_VALUE_TYPES.contains(type);
+    }
+
+    private static final Set<Class<?>> SIMPLE_VALUE_TYPES = Set.of(
+            String.class,
+            Integer.class,
+            Long.class,
+            Short.class,
+            Byte.class,
+            Double.class,
+            Float.class,
+            Boolean.class,
+            Character.class,
+            java.math.BigDecimal.class,
+            java.math.BigInteger.class,
+            java.util.UUID.class,
+            java.time.LocalDate.class,
+            java.time.LocalDateTime.class,
+            java.time.LocalTime.class,
+            java.time.OffsetDateTime.class,
+            java.time.Instant.class,
+            java.util.Date.class
+    );
+
+    private static final class PathSegment {
+        private final String name;
+        private final List<Integer> indexes;
+
+        PathSegment(String name, List<Integer> indexes) {
+            this.name = name == null ? "" : name.trim();
+            this.indexes = indexes == null ? List.of() : List.copyOf(indexes);
+        }
+
+        String getName() {
+            return name;
+        }
+
+        List<Integer> getIndexes() {
+            return indexes;
+        }
     }
 
     private Object buildRequestParameterMap(java.lang.reflect.Parameter parameter,

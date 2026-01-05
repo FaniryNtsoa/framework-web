@@ -1,3 +1,4 @@
+com\framework\Servlets\FrontServlet$PathSegment.class
 com\framework\Scanners\ClassScanner.class
 com\framework\Servlets\FrontServlet.class
 com\framework\annotation\PostMapping.class
